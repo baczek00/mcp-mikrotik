@@ -57,6 +57,7 @@ from dataclasses import asdict
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from . import correlation, guard, security
 from .client import ClientFactory, ClientPool, MikrotikClient, get_client
@@ -73,6 +74,7 @@ from .formatting import (
     split_address_port,
     strip_sensitive_fields,
 )
+from .privacy import NetworkAnonymizer
 from .validation import (
     validate_conntrack_dst_port,
     validate_conntrack_protocol,
@@ -145,6 +147,26 @@ _CERTIFICATE_REDACTED_FIELDS = frozenset({"private-key"})
 _RADIUS_REDACTED_FIELDS = frozenset({"secret"})
 
 
+class _PrivacyFastMCP(FastMCP):
+    """Cover framework input/output validation errors outside the tool wrapper."""
+
+    def __init__(self, anonymizer: NetworkAnonymizer | None, **kwargs: Any) -> None:
+        self._anonymizer = anonymizer
+        super().__init__("mikrotik", **kwargs)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            return await super().call_tool(name, arguments)
+        except Exception as exc:
+            if self._anonymizer is None:
+                raise
+            try:
+                message = self._anonymizer.redact_text(str(exc))
+            except ValidationError:
+                message = "Network privacy error; restart the local MCP server."
+            raise ToolError(message) from None
+
+
 def _wireless_registration_rows(client: MikrotikClient) -> list[dict[str, Any]]:
     """Shared by `wireless_registrations` and `get_wireless_link_quality`
     (v1.11): read `/interface/wifi/registration-table` (ROS7) falling back
@@ -179,6 +201,7 @@ def build_server(settings: Settings | None = None, client_factory: ClientFactory
     # closed deterministically by the lifespan hook below rather than
     # leaking sockets until GC - see client.ClientPool's docstring.
     pool = ClientPool(settings, client_factory)
+    anonymizer = NetworkAnonymizer() if settings.anonymize_addresses else None
 
     @contextlib.asynccontextmanager
     async def _lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -187,7 +210,16 @@ def build_server(settings: Settings | None = None, client_factory: ClientFactory
         finally:
             pool.close_all()
 
-    mcp = FastMCP("mikrotik", lifespan=_lifespan)
+    instructions = None
+    if anonymizer:
+        instructions = (
+            "Network address privacy is enabled. IP4_*, IP6_* and MAC_* are opaque, "
+            "process-local pseudonyms. Use them unchanged in subsequent tool arguments, "
+            "including CIDRs and address lists. The local server resolves them before validation. "
+            "Tokens expire when the server restarts. Do not guess addresses from tokens. "
+            "Write tools still require the existing read-only gate and explicit confirmation."
+        )
+    mcp = _PrivacyFastMCP(anonymizer, lifespan=_lifespan, instructions=instructions)
 
     def _client(device_name: str) -> MikrotikClient:
         return pool.get(device_name)
@@ -217,14 +249,32 @@ def build_server(settings: Settings | None = None, client_factory: ClientFactory
 
         @functools.wraps(fn)
         def inner(*args: Any, **kwargs: Any) -> Any:
-            with correlation.bind() as correlation_id:
+            privacy_context = anonymizer.bind() if anonymizer else contextlib.nullcontext()
+            with correlation.bind() as correlation_id, privacy_context:
                 try:
-                    return fn(*args, **kwargs)
+                    if anonymizer:
+                        args = anonymizer.transform(args, resolve=True)
+                        kwargs = anonymizer.transform(kwargs, resolve=True)
+                    result = fn(*args, **kwargs)
+                    return anonymizer.transform(result) if anonymizer else result
                 except MikrotikMCPError as exc:
-                    logger.info("[%s] tool %s failed: %s", correlation_id, fn.__name__, exc)
+                    message = str(exc)
+                    if anonymizer:
+                        # Capacity exhaustion must never fall back to raw data.
+                        try:
+                            message = anonymizer.redact_text(message)
+                        except ValidationError:
+                            message = "Network privacy error; restart the local MCP server."
+                        logger.info("[%s] tool %s failed: %s", correlation_id, fn.__name__, message)
+                        raise MikrotikMCPError(message) from None
+                    logger.info("[%s] tool %s failed: %s", correlation_id, fn.__name__, message)
                     raise
                 except Exception:
-                    logger.exception("[%s] Unhandled error in tool %s", correlation_id, fn.__name__)
+                    if anonymizer:
+                        # Exception tracebacks can embed arbitrary router data.
+                        logger.error("[%s] Unhandled error in tool %s", correlation_id, fn.__name__)
+                    else:
+                        logger.exception("[%s] Unhandled error in tool %s", correlation_id, fn.__name__)
                     raise RuntimeError("Internal error handling this tool call; see server logs.") from None
 
         return inner

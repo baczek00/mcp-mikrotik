@@ -1,5 +1,10 @@
 # mcp-mikrotik
 
+> **Privacy fork:** local IPv4/IPv6/MAC pseudonymization is enabled by default.
+> Read [docs/PRIVACY.md](docs/PRIVACY.md) for usage, limitations and local opt-out.
+> Upstream project: [thalisantunes/mcp-mikrotik](https://github.com/thalisantunes/mcp-mikrotik).
+
+
 <!-- mcp-name: io.github.thalisantunes/mcp-mikrotik -->
 
 [![CI](https://github.com/thalisantunes/mcp-mikrotik/actions/workflows/ci.yml/badge.svg)](https://github.com/thalisantunes/mcp-mikrotik/actions/workflows/ci.yml)

@@ -32,6 +32,9 @@ import re
 import time
 from typing import Any
 
+from .exceptions import ValidationError
+from .privacy import redact_current_text
+
 logger = logging.getLogger("mcp_mikrotik.audit")
 
 # Any dict key matching this (case-insensitive) is dropped from a journal
@@ -115,9 +118,12 @@ def record(
     }
 
     try:
-        line = json.dumps(event, default=str, sort_keys=True)
+        line = redact_current_text(json.dumps(event, default=str, sort_keys=True))
     except (TypeError, ValueError):
         logger.warning("Audit journal: failed to serialize event for tool=%s operation=%s", tool, operation)
+        return
+    except ValidationError:
+        logger.warning("Audit journal: network privacy capacity exhausted; event omitted.")
         return
 
     path = os.environ.get("MIKROTIK_AUDIT_LOG")
@@ -128,4 +134,8 @@ def record(
         else:
             logger.info(line)
     except OSError as exc:
-        logger.warning("Audit journal: failed to write event to %r: %s", path, exc)
+        try:
+            message = redact_current_text(f"Audit journal: failed to write event to {path!r}: {exc}")
+        except ValidationError:
+            message = "Audit journal: failed to write event."
+        logger.warning(message)

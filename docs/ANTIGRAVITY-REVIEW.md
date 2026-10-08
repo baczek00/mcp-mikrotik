@@ -20,6 +20,7 @@ Abaixo estão os achados da auditoria de segurança independente solicitada, foc
 - **Correção sugerida:** Utilizar `field(repr=False)` na declaração do atributo do dataclass.
   ```python
   from dataclasses import dataclass, field
+
   # ...
   password: str = field(default="", repr=False)
   ```

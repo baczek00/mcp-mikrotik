@@ -6,6 +6,7 @@ Python functions directly), against fake devices only.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp_mikrotik.client import MikrotikClient
 from mcp_mikrotik.config import Device, Settings
 from mcp_mikrotik.exceptions import DeviceCommandError
-from mcp_mikrotik.server import _resolve_log_level, build_server
+from mcp_mikrotik.server import _resolve_log_level
+from mcp_mikrotik.server import build_server as _build_server
 
 from .fakes import FakeConnection, FakePath, RaisingConnection, TransportErrorConnection
 
@@ -135,6 +137,14 @@ EXPECTED_TOOLS = {
     "arm_dead_man",
     "cancel_dead_man",
 }
+
+
+def build_server(settings: Settings, client_factory):
+    """Upstream assertions intentionally exercise explicit raw-address opt-out.
+
+    Default-on privacy and round-trips are covered in test_privacy.py.
+    """
+    return _build_server(replace(settings, anonymize_addresses=False), client_factory)
 
 
 def _factory(fake_connection: FakeConnection):
