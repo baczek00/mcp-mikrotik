@@ -23,8 +23,8 @@ from .exceptions import ValidationError
 _ADDRESS = re.compile(
     r"(?<![\w])(?:"
     r"(?P<mac>(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|(?:[0-9a-f]{2}-){5}[0-9a-f]{2}|"
-    r"[0-9a-f]{4}(?:\.[0-9a-f]{4}){2})(?![\w-]|:[0-9a-f])|"
-    r"(?P<v6>[0-9a-f:.]*:[0-9a-f:.]*:[0-9a-f:.]+|::)(?![0-9a-f:])|"
+    r"[0-9a-f]{4}(?:\.[0-9a-f]{4}){2})(?![\w-]|:[0-9a-f:])|"
+    r"(?P<v6>[0-9a-f:.]*:[0-9a-f:.]*:[0-9a-f:.]*)(?![\w:])|"
     r"(?P<v4>(?:[0-9]{1,3}\.){3}[0-9]{1,3})(?![\w]|\.[0-9])"
     r")",
     re.IGNORECASE,
@@ -40,14 +40,16 @@ class NetworkAnonymizer:
     def __init__(self, max_addresses: int = 100_000) -> None:
         self._forward: dict[tuple[str, str], str] = {}
         self._reverse: dict[str, str] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._max_addresses = max_addresses
 
-    def _alias(self, kind: str, canonical: str) -> str:
+    def _alias(self, kind: str, canonical: str, *, mask_on_capacity: bool = False) -> str:
         with self._lock:
             key = (kind, canonical)
             if key not in self._forward:
                 if len(self._forward) >= self._max_addresses:
+                    if mask_on_capacity:
+                        return "[network address omitted: pseudonym capacity reached]"
                     raise ValidationError("Network pseudonym capacity reached; restart the local MCP server.")
                 token = f"{kind}_{secrets.token_hex(16)}"
                 while token in self._reverse:
@@ -56,7 +58,7 @@ class NetworkAnonymizer:
                 self._reverse[token] = canonical
             return self._forward[key]
 
-    def redact_text(self, text: str) -> str:
+    def redact_text(self, text: str, *, mask_on_capacity: bool = False) -> str:
         """Replace literal IPs/MACs anywhere in text, including log messages."""
 
         def replace(match: re.Match[str]) -> str:
@@ -70,7 +72,7 @@ class NetworkAnonymizer:
             if match.group("mac"):
                 digits = re.sub(r"[:.-]", "", value).upper()
                 canonical = ":".join(digits[i : i + 2] for i in range(0, 12, 2))
-                return self._alias("MAC", canonical)
+                return self._alias("MAC", canonical, mask_on_capacity=mask_on_capacity)
             try:
                 address = ipaddress.ip_address(value)
             except ValueError:
@@ -82,20 +84,20 @@ class NetworkAnonymizer:
                     except ValueError:
                         pass
                     else:
-                        return self._alias("IP6", str(address)) + ":" + suffix
+                        return self._alias("IP6", str(address), mask_on_capacity=mask_on_capacity) + ":" + suffix
                 # IPv4:port is also matched by the IPv6 candidate; parse the
                 # IPv4 inside it without changing the port or surrounding text.
                 if match.group("v6") and "." in value:
                     return re.sub(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}", redact_ipv4, value)
                 return value
-            return self._alias(f"IP{address.version}", str(address)) + suffix
+            return self._alias(f"IP{address.version}", str(address), mask_on_capacity=mask_on_capacity) + suffix
 
         def redact_ipv4(match: re.Match[str]) -> str:
             try:
                 address = ipaddress.IPv4Address(match.group())
             except ValueError:
                 return match.group()
-            return self._alias("IP4", str(address))
+            return self._alias("IP4", str(address), mask_on_capacity=mask_on_capacity)
 
         return _ADDRESS.sub(replace, text)
 
@@ -116,31 +118,50 @@ class NetworkAnonymizer:
                 raise ValidationError("Malformed network pseudonym.")
         return _TOKEN.sub(replace, text)
 
-    def transform(self, value: Any, *, resolve: bool = False) -> Any:
+    def transform(self, value: Any, *, resolve: bool = False, mask_on_capacity: bool = False) -> Any:
         """Copy JSON-shaped data recursively, including string dictionary keys."""
         if isinstance(value, str):
-            return self.resolve_text(value) if resolve else self.redact_text(value)
+            return self.resolve_text(value) if resolve else self.redact_text(value, mask_on_capacity=mask_on_capacity)
         if isinstance(value, dict):
             return {
-                self.transform(key, resolve=resolve): self.transform(val, resolve=resolve) for key, val in value.items()
+                self.transform(key, resolve=resolve, mask_on_capacity=mask_on_capacity): self.transform(
+                    val, resolve=resolve, mask_on_capacity=mask_on_capacity
+                )
+                for key, val in value.items()
             }
         if isinstance(value, list):
-            return [self.transform(item, resolve=resolve) for item in value]
+            return [self.transform(item, resolve=resolve, mask_on_capacity=mask_on_capacity) for item in value]
         if isinstance(value, tuple):
-            return tuple(self.transform(item, resolve=resolve) for item in value)
+            return tuple(self.transform(item, resolve=resolve, mask_on_capacity=mask_on_capacity) for item in value)
         return value
+
+    def require_capacity(self) -> None:
+        """Reject new confirmed operations before any guarded router access."""
+        with self._lock:
+            if len(self._forward) >= self._max_addresses:
+                raise ValidationError("Network pseudonym capacity reached; restart the local MCP server.")
 
     @contextlib.contextmanager
     def bind(self) -> Iterator[None]:
         """Give the audit layer the same aliases as this tool's MCP result."""
-        token = _CURRENT.set(self)
-        try:
-            yield
-        finally:
-            _CURRENT.reset(token)
+        # Keep capacity admission, router execution, audit and result redaction
+        # atomic with respect to other tool calls/alias allocations.
+        with self._lock:
+            token = _CURRENT.set(self)
+            try:
+                yield
+            finally:
+                _CURRENT.reset(token)
 
 
-def redact_current_text(text: str) -> str:
+def redact_current_text(text: str, *, mask_on_capacity: bool = False) -> str:
     """Audit/log hook; outside a protected tool call retains upstream behavior."""
     anonymizer = _CURRENT.get()
-    return anonymizer.redact_text(text) if anonymizer else text
+    return anonymizer.redact_text(text, mask_on_capacity=mask_on_capacity) if anonymizer else text
+
+
+def require_current_capacity() -> None:
+    """Guard hook: no effect for explicit privacy opt-out or standalone guards."""
+    anonymizer = _CURRENT.get()
+    if anonymizer:
+        anonymizer.require_capacity()

@@ -256,7 +256,14 @@ def build_server(settings: Settings | None = None, client_factory: ClientFactory
                         args = anonymizer.transform(args, resolve=True)
                         kwargs = anonymizer.transform(kwargs, resolve=True)
                     result = fn(*args, **kwargs)
-                    return anonymizer.transform(result) if anonymizer else result
+                    # A confirmed operation may have committed already. If its audit
+                    # or reply consumes the final slots, mask excess addresses
+                    # rather than turn a successful mutation into a retryable error.
+                    return (
+                        anonymizer.transform(result, mask_on_capacity=kwargs.get("confirm") is True)
+                        if anonymizer
+                        else result
+                    )
                 except MikrotikMCPError as exc:
                     message = str(exc)
                     if anonymizer:

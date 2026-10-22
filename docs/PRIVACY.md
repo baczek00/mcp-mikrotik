@@ -58,8 +58,21 @@ The map is process-wide for the single local stdio client, not isolated between
 multiple remote users. Do not reuse this design unchanged for HTTP hosting.
 
 Each server process has its own random map, stored only in RAM; restart
-invalidates tokens. The map has a 100,000-address limit; exhaustion fails
-closed and requires a restart. It is not written to files, responses or logs.
+invalidates tokens. The map has a 100,000-address limit. Once full, confirmed
+writes are rejected in the central guard before any guarded router read or
+mutation, and the rejection is audited. Restart the local server to restore
+capacity. Tool calls serialize capacity admission, execution and redaction.
+If a confirmed operation starts with capacity available but its audit or result
+needs more aliases than remain, excess addresses become the explicit marker
+`[network address omitted: pseudonym capacity reached]`. This marker is not a
+resolvable pseudonym. Previously issued aliases remain stable. The operation's
+actual success/error outcome and its audit event are retained, avoiding an
+apparent privacy failure after a successful write and an unsafe retry. Audit
+records use the same masking fallback for previews and errors; reads and
+previews still fail closed if their result cannot be fully pseudonymized.
+Audit destination I/O remains best-effort as upstream; this prevents privacy
+capacity exhaustion from dropping an event, not disk or logging failures.
+The map is not written to files, responses or logs.
 IP/MAC literals in application audit records and handled application errors
 are covered. Raw RouterOS data and the mapping necessarily exist in local
 memory. Third-party debug tracing, OS crash dumps, startup configuration

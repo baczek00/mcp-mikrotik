@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Versions follow
 
 ## [Unreleased]
 
+- Fix local IPv6 pseudonymization for every compressed-zero position, including
+  `fe80::`, `1::`, CIDRs, and six-hextet prefixes that resemble MAC addresses.
+- Reject confirmed writes when the pseudonym map is full, before guarded router
+  access. Serialize tool calls against alias allocation; safely mask excess
+  addresses if an admitted write consumes the remaining capacity, retaining its
+  actual outcome and audit event instead of returning a post-write privacy error.
+  Audit events no longer disappear on privacy capacity exhaustion.
+
 **License changed from Apache-2.0 to GPL-3.0-or-later.** The runtime
 dependency `librouteros` is GPL-2.0-or-later and is imported in-process, which
 makes this a combined work; the project license now reflects that instead of

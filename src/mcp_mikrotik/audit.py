@@ -118,12 +118,9 @@ def record(
     }
 
     try:
-        line = redact_current_text(json.dumps(event, default=str, sort_keys=True))
+        line = redact_current_text(json.dumps(event, default=str, sort_keys=True), mask_on_capacity=True)
     except (TypeError, ValueError):
         logger.warning("Audit journal: failed to serialize event for tool=%s operation=%s", tool, operation)
-        return
-    except ValidationError:
-        logger.warning("Audit journal: network privacy capacity exhausted; event omitted.")
         return
 
     path = os.environ.get("MIKROTIK_AUDIT_LOG")
