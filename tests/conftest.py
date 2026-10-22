@@ -737,12 +737,12 @@ def client(device: Device, fake_connection: FakeConnection) -> MikrotikClient:
 
 @pytest.fixture
 def settings(device: Device) -> Settings:
-    return Settings(allow_write=False, devices={device.name: device})
+    return Settings(anonymize_addresses=False, allow_write=False, devices={device.name: device})
 
 
 @pytest.fixture
 def settings_write_enabled(device: Device) -> Settings:
-    return Settings(allow_write=True, devices={device.name: device})
+    return Settings(anonymize_addresses=False, allow_write=True, devices={device.name: device})
 
 
 @pytest.fixture(autouse=True)

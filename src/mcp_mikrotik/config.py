@@ -79,6 +79,7 @@ class Settings:
     # layer so a future field added to Device without repr=False can't leak
     # through `logger.debug(settings)`.
     devices: dict[str, Device] = field(default_factory=dict, repr=False)
+    anonymize_addresses: bool = True
 
     def get_device(self, name: str) -> Device:
         device = self.devices.get(name)
@@ -190,4 +191,11 @@ def load_settings(devices_path: Path | None = None, env: Mapping[str, str] | Non
     path = devices_path or Path(resolved_env.get("MIKROTIK_DEVICES_FILE", DEFAULT_DEVICES_FILE))
     devices = load_devices(path)
     allow_write = _bool_env(resolved_env.get("MIKROTIK_ALLOW_WRITE"), default=False)
-    return Settings(allow_write=allow_write, devices=devices)
+    privacy_value = resolved_env.get("MIKROTIK_ANONYMIZE_ADDRESSES", "true").strip().lower()
+    if privacy_value not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+        raise ConfigError("MIKROTIK_ANONYMIZE_ADDRESSES must be a boolean (true/false).")
+    return Settings(
+        allow_write=allow_write,
+        devices=devices,
+        anonymize_addresses=_bool_env(privacy_value, default=True),
+    )

@@ -56,6 +56,7 @@ from .formatting import (
     parse_ros_datetime,
     strip_sensitive_fields,
 )
+from .privacy import require_current_capacity
 from .validation import (
     is_literal_ip_address,
     validate_adaptive_noise_immunity,
@@ -786,6 +787,9 @@ def _audited(anchor_operation: str) -> Callable[[Callable[..., WritePreview]], C
         def inner(client: MikrotikClient, settings: Settings, *args: Any, confirm: bool, **kwargs: Any) -> WritePreview:
             correlation_id = current_correlation_id()
             try:
+                if confirm:
+                    _require_allowed(settings, anchor_operation)
+                    require_current_capacity()
                 result = fn(client, settings, *args, confirm=confirm, **kwargs)
             except Exception as exc:
                 audit.record(
